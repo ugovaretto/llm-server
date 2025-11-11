@@ -3,4 +3,6 @@ requires = ["uv"]
 build-backend = "uv.buildbackend"
 
 [tool.uv]
+version = "0.1"
+
 python = "3.12"
