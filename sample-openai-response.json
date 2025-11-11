@@ -1,20 +1,25 @@
 {
-  "id": "cmpl-uqkvlQyYK7bGYrRHQ0eXlWi7",
-  "object": "text_completion",
-  "created": 1589478378,
-  "model": "gpt-3.5-turbo-instruct",
-  "system_fingerprint": "fp_44709d6fcb",
+  "id": "chatcmpl-xxxxxxxxxxxxxxxxxxxxxxxxx",
+  "object": "chat.completion",
+  "created": 1701388800,
+  "model": "gpt-4o-2024-08-06",
   "choices": [
     {
-      "text": "\n\nThis is indeed a test",
       "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\n  \"winner\": \"Los Angeles Dodgers\",\n  \"event\": \"World Series\",\n  \"year\": 2020\n}",
+        "function_call": null,
+        "tool_calls": null
+      },
       "logprobs": null,
-      "finish_reason": "length"
+      "finish_reason": "stop"
     }
   ],
   "usage": {
-    "prompt_tokens": 5,
-    "completion_tokens": 7,
-    "total_tokens": 12
-  }
+    "prompt_tokens": 25,
+    "completion_tokens": 18,
+    "total_tokens": 43
+  },
+  "system_fingerprint": "fp_xxxxxxxxxx"
 }
