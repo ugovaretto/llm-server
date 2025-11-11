@@ -1,10 +1,96 @@
 [project]
-name = "fastLLM"
-version = "0.3"
+name = "llm-server"
+version = "0.4.0"
+description = "SOPA: Stream Optimization and Performance Accelerator - OpenAI-compatible LLM server with advanced caching, rate limiting, and performance optimizations"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+authors = [
+    { name = "Ugo" }
+]
+keywords = [
+    "llm",
+    "server",
+    "openai",
+    "api",
+    "fastapi",
+    "transformers",
+    "optimization",
+    "caching",
+    "performance",
+    "rocm",
+    "amd"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "fastapi>=0.121.0",
+    "uvicorn[standard]>=0.38.0",
+    "transformers>=4.57.0",
+    "torch>=2.10.0",
+    "pydantic>=2.12.0",
+    "requests>=2.32.0",
+    "accelerate>=1.11.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.0",
+    "httpx>=0.28.0",
+]
+quantization = [
+    "bitsandbytes>=0.48.0",
+]
+gptq = [
+    "auto-gptq>=0.7.0",
+]
+
+[project.scripts]
+llm-server = "llm_server.cli:main"
+llm-benchmark = "scripts.benchmark:main"
+llm-profile = "scripts.profiler:main"
+
+[project.urls]
+Homepage = "https://github.com/ugo/llm-server"
+Repository = "https://github.com/ugo/llm-server"
+Documentation = "https://github.com/ugo/llm-server/blob/main/docs/SOPA_README.md"
 
 [build-system]
-requires = ["uv"]
-build-backend = "uv.buildbackend"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.uv]
-python = "3.12"
+dev-dependencies = [
+    "pytest>=9.0.0",
+    "httpx>=0.28.0",
+]
+
+[[tool.uv.index]]
+name = "pytorch-rocm"
+url = "https://download.pytorch.org/whl/nightly/rocm7.0"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-rocm" }
+torchvision = { index = "pytorch-rocm" }
+torchaudio = { index = "pytorch-rocm" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/llm_server"]
