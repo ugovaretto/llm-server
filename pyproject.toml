@@ -1,11 +1,10 @@
+[project]
+name = "fastLLM"
+version = "0.2"
+
 [build-system]
 requires = ["uv"]
 build-backend = "uv.buildbackend"
 
 [tool.uv]
-version = "0.2"
-
-# Project version
-
-
 python = "3.12"
