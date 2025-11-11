@@ -4,6 +4,6 @@ build-backend = "uv.buildbackend"
 
 [tool.uv]
 # Project version
-version = "0.2"
+
 
 python = "3.12"
