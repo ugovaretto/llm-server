@@ -1,0 +1,1 @@
+{"id":"chatcmpl-abc123","object":"chat.completion","created":1717418918,"model":"meta-llama/Meta-Llama-3-8B-Instruct","choices":[{"index":0,"message":{"role":"assistant","content":"Hello! It's nice to meet you. Is there something I can help you with, or would you like to chat?"},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":26,"total_tokens":38}}
