@@ -212,7 +212,13 @@ tokenizer = None
 model = None
 
 
-def load_model(model_id: str, use_quantization: bool = False, device_preference: str = "auto"):
+def load_model(
+    model_id: str,
+    use_quantization: bool = False,
+    device_preference: str = "auto",
+    use_cache: bool | None = None,
+    attn_impl: str | None = None,
+):
     """Load tokenizer and causal LM with ROCm-optimized settings.
 
     - Device placement: `device_map="auto"` and BF16 dtype when not quantized.
@@ -231,7 +237,7 @@ def load_model(model_id: str, use_quantization: bool = False, device_preference:
     print(f"Loading model: {model_name}")
     print(f"{'=' * 60}")
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
     # Optimized model loading for ROCm
     print(f"Loading with optimizations:")
@@ -314,14 +320,51 @@ def load_model(model_id: str, use_quantization: bool = False, device_preference:
         dtype_opt = (torch.bfloat16 if not use_quantization else None)
         if device_pref == "cpu" and not use_quantization:
             dtype_opt = torch.float32
+
+        # Pre-load config and sanitize optional quantization_config to avoid NoneType.to_dict errors
+        from transformers import AutoConfig
+        config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+        # Ensure we do NOT trigger bitsandbytes unless explicitly requested
+        if not use_quantization:
+            try:
+                if hasattr(config, "quantization_config"):
+                    qc = getattr(config, "quantization_config", None)
+                    if qc is None or not isinstance(qc, dict):
+                        setattr(config, "quantization_config", {})
+                if hasattr(config, "load_in_8bit"):
+                    setattr(config, "load_in_8bit", False)
+                if hasattr(config, "load_in_4bit"):
+                    setattr(config, "load_in_4bit", False)
+            except Exception:
+                pass
+        else:
+            # When quantization is requested but config doesn't provide it, stub it
+            if getattr(config, "quantization_config", None) is None:
+                class _EmptyQC(dict):
+                    def to_dict(self):
+                        return {}
+                config.quantization_config = _EmptyQC()
+
+        # Set common attributes on config instead of passing as kwargs to avoid strict init signatures
+        if use_cache is not None:
+            try:
+                config.use_cache = use_cache
+            except Exception:
+                pass
+        if attn_impl is not None:
+            try:
+                setattr(config, "attn_implementation", attn_impl)
+            except Exception:
+                pass
+
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             device_map=device_map_opt,
             dtype=dtype_opt,
             low_cpu_mem_usage=True,
-            use_cache=True,
-            attn_implementation="sdpa",  # Use scaled_dot_product_attention (stable on ROCm)
             quantization_config=quantization_config if use_quantization else None,
+            trust_remote_code=True,
+            config=config,
         )
         if device_pref == "cpu":
             try:
@@ -329,9 +372,41 @@ def load_model(model_id: str, use_quantization: bool = False, device_preference:
             except Exception:
                 pass
     except Exception as e:
+        msg = str(e)
         print(f"❌ Failed to load model '{model_name}' - Error: {{str(e)}}")
-        print("Hint: Ensure model identifier is valid format like 'owner/model_name'.")
-        raise
+        # Fallback: disable quantization if bitsandbytes backend is missing or misconfigured
+        if use_quantization and ("bitsandbytes" in msg or "libbitsandbytes" in msg or "BNB_BACKEND" in msg):
+            print("✗ Quantization backend unavailable. Retrying without quantization...")
+            use_quantization = False
+            try:
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    device_map=device_map_opt,
+                    dtype=torch.bfloat16 if device_pref != "cpu" else torch.float32,
+                    low_cpu_mem_usage=True,
+                    trust_remote_code=True,
+                    config=config,
+                )
+                if device_pref == "cpu":
+                    try:
+                        model.to("cpu")
+                    except Exception:
+                        pass
+            except Exception as e2:
+                print(f"❌ Retry without quantization failed - Error: {{str(e2)}}")
+                print("Hint: Ensure model identifier is valid format like 'owner/model_name'.")
+                raise
+        else:
+            print("Hint: Ensure model identifier is valid format like 'owner/model_name'.")
+            raise
+
+    # Fix missing generation_config on some repositories
+    try:
+        from transformers import GenerationConfig
+        if getattr(model, "generation_config", None) is None:
+            model.generation_config = GenerationConfig.from_model_config(model.config)
+    except Exception:
+        pass
 
     # Verify device placement
     print(f"\n✓ Model loaded successfully")

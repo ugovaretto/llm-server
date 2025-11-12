@@ -86,11 +86,32 @@ def main():
         default="auto",
         help="Select device to use for inference (auto/gpu/cpu)"
     )
+    parser.add_argument(
+        "--attn-impl",
+        dest="attn_impl",
+        type=str,
+        default=None,
+        help="Attention implementation to use (e.g., sdpa)"
+    )
+    parser.add_argument(
+        "--use-cache",
+        dest="use_cache",
+        choices=["true", "false"],
+        default=None,
+        help="Enable or disable KV cache (pass explicitly if needed)"
+    )
     
     args = parser.parse_args()
     
     # Load the model before starting the server
-    load_model(args.model, use_quantization=args.quantize, device_preference=args.device)
+    use_cache = None if args.use_cache is None else (args.use_cache == "true")
+    load_model(
+        args.model,
+        use_quantization=args.quantize,
+        device_preference=args.device,
+        use_cache=use_cache,
+        attn_impl=args.attn_impl,
+    )
     # Set defaults via environment consumed by server when request omits these fields
     os.environ.setdefault("SOPA_DEFAULT_TEMPERATURE", str(args.temperature))
     os.environ.setdefault("SOPA_DEFAULT_TOP_P", str(args.top_p))
