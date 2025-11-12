@@ -212,7 +212,7 @@ tokenizer = None
 model = None
 
 
-def load_model(model_id: str, use_quantization: bool = False):
+def load_model(model_id: str, use_quantization: bool = False, device_preference: str = "auto"):
     """Load tokenizer and causal LM with ROCm-optimized settings.
 
     - Device placement: `device_map="auto"` and BF16 dtype when not quantized.
@@ -242,6 +242,22 @@ def load_model(model_id: str, use_quantization: bool = False):
     print(f"  - attn_implementation: sdpa (for ROCm stability)")
     if use_quantization:
         print(f"  - quantization: 8-bit")
+
+    # Optional device preference (auto/gpu/cpu)
+    device_pref = device_preference or os.getenv("SOPA_DEVICE", "auto")
+    if device_pref == "cpu":
+        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+        os.environ["HIP_VISIBLE_DEVICES"] = "-1"
+        print("  Device preference: CPU (GPU disabled via env)")
+    elif device_pref == "gpu":
+        # Ensure GPUs are visible if available
+        if os.environ.get("CUDA_VISIBLE_DEVICES") == "-1":
+            del os.environ["CUDA_VISIBLE_DEVICES"]
+        if os.environ.get("HIP_VISIBLE_DEVICES") == "-1":
+            del os.environ["HIP_VISIBLE_DEVICES"]
+        print("  Device preference: GPU")
+    else:
+        print("  Device preference: auto")
 
     # Prepare quantization config if requested
     quantization_config = None
@@ -294,17 +310,24 @@ def load_model(model_id: str, use_quantization: bool = False):
             use_quantization = False
 
     try:
+        device_map_opt = "auto" if device_pref != "cpu" else "sequential"
+        dtype_opt = (torch.bfloat16 if not use_quantization else None)
+        if device_pref == "cpu" and not use_quantization:
+            dtype_opt = torch.float32
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            device_map="auto",
-            dtype=torch.bfloat16
-            if not use_quantization
-            else None,  # quantization overrides dtype
+            device_map=device_map_opt,
+            dtype=dtype_opt,
             low_cpu_mem_usage=True,
             use_cache=True,
             attn_implementation="sdpa",  # Use scaled_dot_product_attention (stable on ROCm)
             quantization_config=quantization_config if use_quantization else None,
         )
+        if device_pref == "cpu":
+            try:
+                model.to("cpu")
+            except Exception:
+                pass
     except Exception as e:
         print(f"❌ Failed to load model '{model_name}' - Error: {{str(e)}}")
         print("Hint: Ensure model identifier is valid format like 'owner/model_name'.")
@@ -336,13 +359,13 @@ def load_model(model_id: str, use_quantization: bool = False):
     print(f"  Shape: {first_param.shape}")
 
     # Check GPU memory usage if on GPU
-    if torch.cuda.is_available() and "cuda" in str(first_param.device):
+    if torch.cuda.is_available() and "cuda" in str(first_param.device) and device_pref != "cpu":
         print(f"\n🎮 GPU Memory Usage:")
         for i in range(torch.cuda.device_count()):
             allocated = torch.cuda.memory_allocated(i) / 1024**3
             reserved = torch.cuda.memory_reserved(i) / 1024**3
             print(f"  GPU {i}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
-    else:
+    elif device_pref == "gpu":
         print(f"\n❌ ERROR: Model is NOT on GPU! This will be very slow.")
 
     # Compile model for faster inference (PyTorch 2.x optimization)
@@ -420,9 +443,16 @@ async def chat_completion(
             return cached_response
 
     # Convert messages to prompt format
-    prompt = tokenizer.apply_chat_template(
-        request.messages, tokenize=False, add_generation_prompt=True
-    )
+    try:
+        prompt = tokenizer.apply_chat_template(
+            request.messages, tokenize=False, add_generation_prompt=True
+        )
+    except Exception:
+        # Fallback: simple join of user/content messages
+        prompt = "\n".join(
+            m.get("content", "") if isinstance(m, dict) else str(m)
+            for m in request.messages
+        )
 
     # Tokenize input
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)

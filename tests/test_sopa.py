@@ -1,58 +1,8 @@
 import time
 from fastapi.testclient import TestClient
-import llm_server.server as server
+from llm_server.server import app, model_name
 
-class FakeBatch(dict):
-    def to(self, device):
-        return self
-
-class FakeStreamer:
-    def __init__(self, tokenizer, skip_prompt=True, skip_special_tokens=True):
-        self.queue = []
-        self.closed = False
-    def put(self, text):
-        self.queue.append(text)
-    def end(self):
-        self.closed = True
-    def __iter__(self):
-        idx = 0
-        while True:
-            if idx < len(self.queue):
-                item = self.queue[idx]
-                idx += 1
-                yield item
-            elif self.closed:
-                break
-
-class FakeTokenizer:
-    eos_token_id = 0
-    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True):
-        return " ".join([m.get("content", "") for m in messages])
-    def __call__(self, prompt, return_tensors="pt"):
-        return FakeBatch({"input_ids": [[1, 2, 3]]})
-    def decode(self, token_list, skip_special_tokens=True):
-        return "".join(["x" for _ in token_list])
-
-class FakeModel:
-    def __init__(self):
-        self.device = "cpu"
-    def generate(self, **kwargs):
-        streamer = kwargs.get("streamer")
-        max_new_tokens = kwargs.get("max_new_tokens", 5)
-        if streamer:
-            for _ in range(max_new_tokens):
-                streamer.put("x")
-            streamer.end()
-            return None
-        input_ids = kwargs.get("input_ids", [[1, 2, 3]])
-        return [input_ids[0] + [4] * max_new_tokens]
-
-server.TextIteratorStreamer = FakeStreamer
-server.model_name = "test-model"
-server.tokenizer = FakeTokenizer()
-server.model = FakeModel()
-
-client = TestClient(server.app)
+client = TestClient(app)
 
 def test_health_endpoint():
     response = client.get('/health')
@@ -72,7 +22,7 @@ def test_metrics_endpoint():
 
 def test_rate_limiting():
     data = {
-        'model': 'test-model',
+        'model': model_name or 'sshleifer/tiny-gpt2',
         'messages': [{'role': 'user', 'content': 'Hi'}],
         'temperature': 0.1,
         'max_tokens': 5
@@ -82,7 +32,7 @@ def test_rate_limiting():
 
 def test_caching():
     data = {
-        'model': 'test-model',
+        'model': model_name or 'sshleifer/tiny-gpt2',
         'messages': [{'role': 'user', 'content': 'What is 2+2?'}],
         'temperature': 0.1,
         'max_tokens': 10
@@ -103,7 +53,7 @@ def test_caching():
 
 def test_api_key_auth():
     data = {
-        'model': 'test-model',
+        'model': model_name or 'sshleifer/tiny-gpt2',
         'messages': [{'role': 'user', 'content': 'Hello'}],
         'max_tokens': 5
     }
@@ -122,7 +72,7 @@ def test_clear_cache_admin():
 
 def test_streaming_with_sopa():
     data = {
-        'model': 'test-model',
+        'model': model_name or 'sshleifer/tiny-gpt2',
         'messages': [{'role': 'user', 'content': 'Count to 3'}],
         'stream': True,
         'max_tokens': 5

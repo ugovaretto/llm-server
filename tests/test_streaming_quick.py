@@ -48,25 +48,24 @@ class FakeModel:
         input_ids = kwargs.get("input_ids", [[1, 2, 3]])
         return [input_ids[0] + [4] * max_new_tokens]
 
-server.TextIteratorStreamer = FakeStreamer
-server.model_name = "test-model"
-server.tokenizer = FakeTokenizer()
-server.model = FakeModel()
 client = TestClient(server.app)
 
 def test_streaming():
     headers = {'Accept': 'text/event-stream'}
     data = {
-        'model': 'test-model',
+        'model': server.model_name,
         'messages': [{'role': 'user', 'content': 'Hello'}],
         'temperature': 0.7,
         'max_tokens': 5
     }
-    response = client.post('/v1/chat/completions', json=data, headers=headers)
+    response = client.post('/v1/chat/completions', json=data, headers=headers, timeout=5.0)
     assert response.status_code == 200
     assert response.headers.get('content-type') == 'text/event-stream'
     content_chunks = 0
-    for line in response.text.splitlines():
+    for raw in response.iter_lines():
+        if not raw:
+            continue
+        line = raw if isinstance(raw, str) else raw.decode('utf-8')
         if line == 'data: [DONE]':
             break
         if line.startswith('data: '):

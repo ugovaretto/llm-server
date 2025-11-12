@@ -23,7 +23,6 @@ class FakeModel:
         input_ids = kwargs.get("input_ids", [[1,2,3]])
         return [input_ids[0] + [4] * kwargs.get("max_new_tokens", 5)]
 
-server.model_name = "test-model"
 
 client = TestClient(server.app)
 
@@ -31,7 +30,7 @@ def test_parameters_mapping():
     server.tokenizer = FakeTokenizer()
     server.model = FakeModel()
     payload = {
-        "model": "test-model",
+        "model": server.model_name,
         "messages": [{"role": "user", "content": "Hello"}],
         "temperature": 0.7,
         "top_p": 0.95,

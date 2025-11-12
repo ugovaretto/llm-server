@@ -80,17 +80,24 @@ def main():
         default=None,
         help="Default repetition penalty (>1 discourages repeats)"
     )
+    parser.add_argument(
+        "--device",
+        choices=["auto", "gpu", "cpu"],
+        default="auto",
+        help="Select device to use for inference (auto/gpu/cpu)"
+    )
     
     args = parser.parse_args()
     
     # Load the model before starting the server
-    load_model(args.model, use_quantization=args.quantize)
+    load_model(args.model, use_quantization=args.quantize, device_preference=args.device)
     # Set defaults via environment consumed by server when request omits these fields
     os.environ.setdefault("SOPA_DEFAULT_TEMPERATURE", str(args.temperature))
     os.environ.setdefault("SOPA_DEFAULT_TOP_P", str(args.top_p))
     os.environ.setdefault("SOPA_DEFAULT_TOP_K", str(args.top_k))
     if args.repetition_penalty is not None:
         os.environ.setdefault("SOPA_DEFAULT_REPETITION_PENALTY", str(args.repetition_penalty))
+    os.environ.setdefault("SOPA_DEVICE", args.device)
     
     # Start the server
     uvicorn.run(app, host=args.host, port=args.port)
