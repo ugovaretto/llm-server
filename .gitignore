@@ -53,5 +53,6 @@ Thumbs.db
 !pyproject.toml
 !package.json
 server.log
+.vercelignore
 out.json
 out-formatted.json
