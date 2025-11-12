@@ -1,82 +1,93 @@
 #!/usr/bin/env python3
-"""Test that streaming format matches OpenAI spec exactly"""
-
-import requests
 import json
+from fastapi.testclient import TestClient
+import llm_server.server as server
+
+class FakeBatch(dict):
+    def to(self, device):
+        return self
+
+class FakeStreamer:
+    def __init__(self, tokenizer, skip_prompt=True, skip_special_tokens=True):
+        self.queue = []
+        self.closed = False
+    def put(self, text):
+        self.queue.append(text)
+    def end(self):
+        self.closed = True
+    def __iter__(self):
+        idx = 0
+        while True:
+            if idx < len(self.queue):
+                item = self.queue[idx]
+                idx += 1
+                yield item
+            elif self.closed:
+                break
+
+class FakeTokenizer:
+    eos_token_id = 0
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True):
+        return " ".join([m.get("content", "") for m in messages])
+    def __call__(self, prompt, return_tensors="pt"):
+        return FakeBatch({"input_ids": [[1, 2, 3]]})
+    def decode(self, token_list, skip_special_tokens=True):
+        return "".join(["x" for _ in token_list])
+
+class FakeModel:
+    def __init__(self):
+        self.device = "cpu"
+    def generate(self, **kwargs):
+        streamer = kwargs.get("streamer")
+        max_new_tokens = kwargs.get("max_new_tokens", 5)
+        if streamer:
+            for _ in range(max_new_tokens):
+                streamer.put("x")
+            streamer.end()
+            return None
+        input_ids = kwargs.get("input_ids", [[1, 2, 3]])
+        return [input_ids[0] + [4] * max_new_tokens]
+
+server.TextIteratorStreamer = FakeStreamer
+server.model_name = "test-model"
+server.tokenizer = FakeTokenizer()
+server.model = FakeModel()
+client = TestClient(server.app)
 
 def test_streaming_format():
-    """Verify streaming matches OpenAI format from openai-streaming-example.jsonl"""
-    url = 'http://127.0.0.1:8000/v1/chat/completions'
-    data = {
-        'model': 'meta-llama/Meta-Llama-3-8B-Instruct',
-        'messages': [{'role': 'user', 'content': 'Count to 3'}],
-        'stream': True,
-        'max_tokens': 20
-    }
-    
-    print('Testing streaming format compliance...\n')
-    response = requests.post(url, json=data, stream=True, timeout=30)
-    
-    # Verify headers
-    assert response.status_code == 200, f"Expected 200, got {response.status_code}"
-    assert response.headers.get('content-type') == 'text/event-stream', \
-        f"Expected text/event-stream, got {response.headers.get('content-type')}"
-    
+    response = client.post(
+        '/v1/chat/completions',
+        json={
+            'model': 'test-model',
+            'messages': [{'role': 'user', 'content': 'Count to 3'}],
+            'stream': True,
+            'max_tokens': 5,
+        },
+        headers={'Accept': 'text/event-stream'},
+    )
+    assert response.status_code == 200
+    assert response.headers.get('content-type') == 'text/event-stream'
     chunks = []
     content_chunks = 0
     done_received = False
-    
-    for line in response.iter_lines():
-        if not line:
-            continue
-            
-        decoded = line.decode('utf-8')
-        
-        if decoded == 'data: [DONE]':
+    for line in response.text.splitlines():
+        if line == 'data: [DONE]':
             done_received = True
-            print(f'✓ Received [DONE] marker')
             break
-        
-        if decoded.startswith('data: '):
-            try:
-                data_json = json.loads(decoded[6:])
-                chunks.append(data_json)
-                
-                # Verify required fields
-                assert 'id' in data_json, "Missing 'id' field"
-                assert 'object' in data_json, "Missing 'object' field"
-                assert data_json['object'] == 'chat.completion.chunk', \
-                    f"Expected 'chat.completion.chunk', got {data_json['object']}"
-                assert 'created' in data_json, "Missing 'created' field"
-                assert 'model' in data_json, "Missing 'model' field"
-                assert 'choices' in data_json, "Missing 'choices' field"
-                
-                choice = data_json['choices'][0]
-                assert 'index' in choice, "Missing 'index' field"
-                assert 'delta' in choice, "Missing 'delta' field"
-                assert 'logprobs' in choice, "Missing 'logprobs' field"
-                assert 'finish_reason' in choice, "Missing 'finish_reason' field"
-                
-                if 'content' in choice['delta']:
-                    content_chunks += 1
-                    
-            except json.JSONDecodeError as e:
-                print(f'✗ JSON parse error: {e}')
-                print(f'  Line: {decoded}')
-                raise
-            except AssertionError as e:
-                print(f'✗ Format error: {e}')
-                print(f'  Chunk: {data_json}')
-                raise
-    
-    # Verify we got data
-    assert content_chunks > 0, "No content chunks received"
-    assert done_received, "Did not receive [DONE] marker"
-    
-    print(f'✓ Received {content_chunks} content chunks')
-    print(f'✓ All chunks have required fields')
-    print(f'✓ Format matches OpenAI spec')
-    print(f'\n✓✓✓ Streaming format test PASSED ✓✓✓')
-
-if __name__ == '__main__':
-    test_streaming_format()
+        if line.startswith('data: '):
+            data_json = json.loads(line[6:])
+            chunks.append(data_json)
+            assert 'id' in data_json
+            assert 'object' in data_json and data_json['object'] == 'chat.completion.chunk'
+            assert 'created' in data_json
+            assert 'model' in data_json
+            assert 'choices' in data_json
+            choice = data_json['choices'][0]
+            assert 'index' in choice
+            assert 'delta' in choice
+            assert 'logprobs' in choice
+            assert 'finish_reason' in choice
+            if 'content' in choice['delta']:
+                content_chunks += 1
+    assert content_chunks > 0
+    assert done_received
