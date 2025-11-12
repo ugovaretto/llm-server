@@ -60,7 +60,7 @@ def test_streaming():
         'model': 'test-model',
         'messages': [{'role': 'user', 'content': 'Hello'}],
         'temperature': 0.7,
-        'max_tokens': 10
+        'max_tokens': 5
     }
     response = client.post('/v1/chat/completions', json=data, headers=headers)
     assert response.status_code == 200

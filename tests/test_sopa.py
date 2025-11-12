@@ -125,7 +125,7 @@ def test_streaming_with_sopa():
         'model': 'test-model',
         'messages': [{'role': 'user', 'content': 'Count to 3'}],
         'stream': True,
-        'max_tokens': 20
+        'max_tokens': 5
     }
     response = client.post('/v1/chat/completions', json=data, headers={'Accept': 'text/event-stream'})
     assert response.status_code == 200

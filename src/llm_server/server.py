@@ -199,6 +199,9 @@ class ChatCompletionRequest(BaseModel):
     model: str
     messages: list
     temperature: float = 0.7
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
+    repetition_penalty: Optional[float] = None
     max_tokens: int = 150
     stream: bool = False
 
@@ -438,8 +441,9 @@ async def chat_completion(
                 "max_new_tokens": request.max_tokens,
                 "do_sample": True if request.temperature > 0 else False,
                 "temperature": request.temperature if request.temperature > 0 else None,
-                "top_p": 0.9 if request.temperature > 0 else None,
-                "top_k": 50 if request.temperature > 0 else None,
+                "top_p": request.top_p if (request.top_p is not None and request.temperature > 0) else (0.9 if request.temperature > 0 else None),
+                "top_k": request.top_k if (request.top_k is not None and request.temperature > 0) else (50 if request.temperature > 0 else None),
+                "repetition_penalty": request.repetition_penalty if request.repetition_penalty is not None else None,
                 "streamer": streamer,
                 "pad_token_id": tokenizer.eos_token_id,
                 "use_cache": True,
@@ -497,8 +501,9 @@ async def chat_completion(
                 max_new_tokens=request.max_tokens,
                 do_sample=True if request.temperature > 0 else False,
                 temperature=request.temperature if request.temperature > 0 else None,
-                top_p=0.9 if request.temperature > 0 else None,
-                top_k=50 if request.temperature > 0 else None,
+                top_p=request.top_p if (request.top_p is not None and request.temperature > 0) else (0.9 if request.temperature > 0 else None),
+                top_k=request.top_k if (request.top_k is not None and request.temperature > 0) else (50 if request.temperature > 0 else None),
+                repetition_penalty=request.repetition_penalty if request.repetition_penalty is not None else None,
                 pad_token_id=tokenizer.eos_token_id,
                 use_cache=True,
                 num_beams=1,

@@ -61,7 +61,7 @@ def test_streaming_format():
             'model': 'test-model',
             'messages': [{'role': 'user', 'content': 'Count to 3'}],
             'stream': True,
-            'max_tokens': 5,
+            'max_tokens': 3,
         },
         headers={'Accept': 'text/event-stream'},
     )

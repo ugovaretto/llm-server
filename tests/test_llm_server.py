@@ -1,5 +1,7 @@
 import pytest
+import requests
 from fastapi.testclient import TestClient
+from llm_server.server import app
 import llm_server.server as server
 
 class FakeBatch(dict):
@@ -8,20 +10,16 @@ class FakeBatch(dict):
 
 class FakeTokenizer:
     eos_token_id = 0
-
     def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True):
         return " ".join([m.get("content", "") for m in messages])
-
-    def __call__(self, prompt, return_tensors="pt"):
+    def __call__(self, prompt, return_tensors="pt", **kwargs):
         return FakeBatch({"input_ids": [[1, 2, 3]]})
-
     def decode(self, token_list, skip_special_tokens=True):
         return "".join(["x" for _ in token_list])
 
 class FakeModel:
     def __init__(self):
         self.device = "cpu"
-
     def generate(self, **kwargs):
         streamer = kwargs.get("streamer")
         max_new_tokens = kwargs.get("max_new_tokens", 5)
@@ -33,18 +31,38 @@ class FakeModel:
         input_ids = kwargs.get("input_ids", [[1, 2, 3]])
         return [input_ids[0] + [4] * max_new_tokens]
 
-server.model_name = "test-model"
+class FakeStreamer:
+    def __init__(self, tokenizer, skip_prompt=True, skip_special_tokens=True):
+        self.queue = []
+        self.closed = False
+    def put(self, text):
+        self.queue.append(text)
+    def end(self):
+        self.closed = True
+    def __iter__(self):
+        idx = 0
+        while True:
+            if idx < len(self.queue):
+                item = self.queue[idx]
+                idx += 1
+                yield item
+            elif self.closed:
+                break
+
+# Initialize test fakes and model id expected by tests
+server.model_name = "meta-llama/Meta-Llama-3-8B-Instruct"
 server.tokenizer = FakeTokenizer()
 server.model = FakeModel()
+server.TextIteratorStreamer = FakeStreamer
 
-client = TestClient(server.app)
+client = TestClient(app)
 
 
 def test_chat_completion():
     response = client.post(
         "/v1/chat/completions",
         json={
-            "model": "test-model",
+            "model": "meta-llama/Meta-Llama-3-8B-Instruct",
             "messages": [{"role": "user", "content": "Hello"}],
             "temperature": 0.7,
             "max_tokens": 150
@@ -64,7 +82,7 @@ def test_streaming_chat_completion():
     response = client.post(
         "/v1/chat/completions",
         json={
-            "model": "test-model",
+            "model": "meta-llama/Meta-Llama-3-8B-Instruct",
             "messages": [{"role": "user", "content": "Hello"}],
             "temperature": 0.7,
             "max_tokens": 150
@@ -86,9 +104,9 @@ def test_list_models():
     assert isinstance(data["data"], list)
     assert len(data["data"]) > 0
     model = data["data"][0]
-    assert model["id"] == "test-model"
+    assert model["id"] == "meta-llama/Meta-Llama-3-8B-Instruct"
     assert model["object"] == "model"
-    assert model["owned_by"] == "unknown"
+    assert model["owned_by"] == "meta-llama"
 
 
 def test_invalid_model():

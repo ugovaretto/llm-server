@@ -1,6 +1,7 @@
 """Command-line interface for SOPA LLM Server."""
 
 import argparse
+import os
 import torch
 import uvicorn
 from .server import load_model, app
@@ -52,11 +53,44 @@ def main():
         action="store_true", 
         help="Use 8-bit quantization for 2-3x speedup (requires bitsandbytes)"
     )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.7,
+        help="Default temperature for sampling (0 for greedy)"
+    )
+    parser.add_argument(
+        "--top-p",
+        dest="top_p",
+        type=float,
+        default=0.9,
+        help="Default nucleus sampling probability (used when temperature>0)"
+    )
+    parser.add_argument(
+        "--top-k",
+        dest="top_k",
+        type=int,
+        default=50,
+        help="Default top-k sampling size (used when temperature>0)"
+    )
+    parser.add_argument(
+        "--repetition-penalty",
+        dest="repetition_penalty",
+        type=float,
+        default=None,
+        help="Default repetition penalty (>1 discourages repeats)"
+    )
     
     args = parser.parse_args()
     
     # Load the model before starting the server
     load_model(args.model, use_quantization=args.quantize)
+    # Set defaults via environment consumed by server when request omits these fields
+    os.environ.setdefault("SOPA_DEFAULT_TEMPERATURE", str(args.temperature))
+    os.environ.setdefault("SOPA_DEFAULT_TOP_P", str(args.top_p))
+    os.environ.setdefault("SOPA_DEFAULT_TOP_K", str(args.top_k))
+    if args.repetition_penalty is not None:
+        os.environ.setdefault("SOPA_DEFAULT_REPETITION_PENALTY", str(args.repetition_penalty))
     
     # Start the server
     uvicorn.run(app, host=args.host, port=args.port)
