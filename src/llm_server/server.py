@@ -1,3 +1,10 @@
+"""SOPA LLM Server
+
+OpenAI-compatible FastAPI server providing `/v1/chat/completions`, `/v1/models`, health, metrics,
+and admin endpoints. Integrates Hugging Face Transformers with optional quantization and
+`torch.compile` acceleration, plus SOPA features: response caching, rate limiting, and
+performance metrics. Tuned for ROCm environments with AMD GPUs.
+"""
 from fastapi import FastAPI, HTTPException, Request, Header, Depends
 from fastapi.responses import StreamingResponse
 from typing import List, Optional
@@ -23,6 +30,12 @@ app = FastAPI(
 
 # SOPA: Response Cache
 class ResponseCache:
+    """In-memory response cache with TTL and size cap.
+
+    - Keys include messages and generation parameters to avoid collisions.
+    - Evicts the oldest entry when `max_size` is reached.
+    - Tracks hit/miss statistics for metrics reporting.
+    """
     def __init__(self, max_size: int = 1000, ttl_seconds: int = 3600):
         self.cache = {}
         self.max_size = max_size
@@ -78,6 +91,11 @@ class ResponseCache:
 
 # SOPA: Rate Limiter
 class RateLimiter:
+    """Simple sliding-window rate limiter.
+
+    - Maintains per-client request timestamps.
+    - Allows up to `max_requests` within `window_seconds`.
+    """
     def __init__(self, max_requests: int = 60, window_seconds: int = 60):
         self.max_requests = max_requests
         self.window_seconds = window_seconds
@@ -108,6 +126,11 @@ class RateLimiter:
 
 # SOPA: Performance Metrics
 class PerformanceMetrics:
+    """Aggregated performance counters for observability.
+
+    Tracks total requests, token counts, latency averages, streaming/non-streaming splits,
+    and error events.
+    """
     def __init__(self):
         self.total_requests = 0
         self.total_tokens_generated = 0
@@ -153,6 +176,11 @@ VALID_API_KEYS = {"sk-test-key-123", "sk-dev-key-456"}
 
 
 async def verify_api_key(authorization: Optional[str] = Header(None)):
+    """Parse and verify optional Bearer API key.
+
+    Returns the API key string if valid, else `None`. Admin-only endpoints require a
+    valid key; other endpoints accept anonymous requests.
+    """
     if authorization and authorization.startswith("Bearer "):
         api_key = authorization.replace("Bearer ", "")
         if api_key in VALID_API_KEYS:
@@ -161,6 +189,13 @@ async def verify_api_key(authorization: Optional[str] = Header(None)):
 
 
 class ChatCompletionRequest(BaseModel):
+    """OpenAI-style chat completion request body.
+
+    - `model`: must match the globally loaded model.
+    - `messages`: list of chat messages with roles and content.
+    - `temperature`/`max_tokens`: generation controls.
+    - `stream`: when true (or `Accept: text/event-stream`), enables SSE streaming.
+    """
     model: str
     messages: list
     temperature: float = 0.7
@@ -175,7 +210,17 @@ model = None
 
 
 def load_model(model_id: str, use_quantization: bool = False):
-    """Load model and tokenizer with optimizations"""
+    """Load tokenizer and causal LM with ROCm-optimized settings.
+
+    - Device placement: `device_map="auto"` and BF16 dtype when not quantized.
+    - Attention: SDPA for ROCm stability.
+    - Quantization:
+      * ROCm: attempts AMD Quark; falls back to full precision if unavailable.
+      * CUDA: uses bitsandbytes 8-bit `BitsAndBytesConfig`.
+      * CPU: disables quantization.
+    - Compilation: tries `torch.compile(mode="max-autotune")` then `reduce-overhead`.
+    Prints diagnostics for device placement and memory.
+    """
     global model_name, tokenizer, model
 
     model_name = model_id
@@ -198,7 +243,7 @@ def load_model(model_id: str, use_quantization: bool = False):
     # Prepare quantization config if requested
     quantization_config = None
     if use_quantization:
-        # Check for ROCm and prefer AMD Quark
+        # Check for ROCm and prefer AMD Quark on AMD GPUs; fallback to bitsandbytes on CUDA
         try:
             # Debug: Check torch version info
             has_rocm = hasattr(torch.version, 'hip') and torch.version.hip is not None
@@ -225,7 +270,7 @@ def load_model(model_id: str, use_quantization: bool = False):
                     use_quantization = False
                     quantization_config = None
             elif torch.cuda.is_available():
-                print("  CUDA detected. Using bitsandbytes...")
+                print("  CUDA detected. Using bitsandbytes 8-bit quantization...")
                 from transformers import BitsAndBytesConfig
 
                 quantization_config = BitsAndBytesConfig(
@@ -235,7 +280,7 @@ def load_model(model_id: str, use_quantization: bool = False):
                 )
                 print(f"  ✓ 8-bit quantization enabled")
             else:
-                print("  No GPU detected. CPU doesn't support quantization, disabling...")
+                print("  No GPU detected. CPU quantization not supported here; disabling...")
                 use_quantization = False
         except ImportError as e:
             print(
@@ -327,6 +372,17 @@ async def chat_completion(
     req: Request = None,
     api_key: Optional[str] = Depends(verify_api_key),
 ):
+    """Chat completions endpoint compatible with OpenAI.
+
+    Behavior:
+    - Rate limits per client and validates requested `model`.
+    - Streaming: when requested, uses `TextIteratorStreamer` with a background thread
+      to yield SSE chunks in OpenAI format (`object: chat.completion.chunk`) and final
+      `data: [DONE]` marker.
+    - Non-streaming: returns a single JSON with `choices` and `usage` fields.
+    - Caching: deterministic (low-temperature) non-streaming responses cached by key.
+    - Metrics: records latency and token counts.
+    """
     start_time = time.time()
 
     # SOPA: Rate limiting
@@ -371,12 +427,12 @@ async def chat_completion(
     if is_streaming:
 
         def generate_response():
-            # Use TextIteratorStreamer for real streaming
+            # Use TextIteratorStreamer for token-by-token streaming
             streamer = TextIteratorStreamer(
                 tokenizer, skip_prompt=True, skip_special_tokens=True
             )
 
-            # Run generation in a separate thread with optimized parameters
+            # Run generation in a background thread and yield SSE chunks from the iterator
             generation_kwargs = {
                 **inputs,
                 "max_new_tokens": request.max_tokens,
@@ -393,7 +449,7 @@ async def chat_completion(
             thread = Thread(target=model.generate, kwargs=generation_kwargs)
             thread.start()
 
-            # Stream tokens as they arrive
+            # Stream tokens as they arrive, formatting to OpenAI-compatible SSE
             for text_chunk in streamer:
                 # Skip empty chunks
                 if not text_chunk or text_chunk.strip() == "":
@@ -421,7 +477,7 @@ async def chat_completion(
             # Wait for generation to complete
             thread.join()
 
-            # Send [DONE] message
+            # End of stream marker per OpenAI SSE spec
             yield "data: [DONE]\n\n"
 
         # SOPA: Record streaming metrics
@@ -510,6 +566,7 @@ class ListModelsResponse(BaseModel):
 
 @app.get("/v1/models")
 def list_models():
+    """Return the currently loaded model in OpenAI list format."""
     return ListModelsResponse(
         object="list",
         data=[
@@ -525,6 +582,7 @@ def list_models():
 # SOPA: Health Check Endpoint
 @app.get("/health")
 def health_check():
+    """Basic liveness endpoint with timestamp."""
     return {
         "status": "healthy",
         "service": "SOPA LLM Server",
@@ -535,6 +593,7 @@ def health_check():
 # SOPA: Metrics Endpoint
 @app.get("/metrics")
 def get_metrics():
+    """Return SOPA performance, cache, and rate limiter statistics."""
     return {
         "sopa_version": "1.0.0",
         "performance": sopa_metrics.stats(),
@@ -547,6 +606,7 @@ def get_metrics():
 # SOPA: Clear Cache Endpoint (requires API key)
 @app.post("/admin/clear-cache")
 def clear_cache(api_key: Optional[str] = Depends(verify_api_key)):
+    """Admin-only endpoint to clear cache and reset hit/miss counters."""
     if not api_key:
         raise HTTPException(status_code=401, detail="API key required")
 
@@ -561,7 +621,11 @@ def clear_cache(api_key: Optional[str] = Depends(verify_api_key)):
 # SOPA: Device Diagnostic Endpoint
 @app.get("/debug/device-info")
 def device_info():
-    """Check where the model is actually loaded"""
+    """Device diagnostics: parameter distribution, GPU memory, and placement.
+
+    Returns metadata about the first parameter's device and dtype, per-device parameter
+    counts, and (if available) CUDA memory statistics.
+    """
     if model is None:
         return {"error": "Model not loaded"}
 
